@@ -20,28 +20,29 @@ export default function EmailSignup() {
   };
 
   return (
-    <div className="rounded-2xl px-8 py-7" style={{ backgroundColor: '#3F403F' }}>
-      <p className="text-white mb-4" style={{ fontFamily: 'var(--font-serif)', fontSize: '1.4rem' }}>
+    <div className="rounded-2xl px-8 py-7" style={{ backgroundColor: '#7E9E8A' }}>
+      <p className="mb-4" style={{ fontFamily: 'var(--font-serif)', fontSize: '1.4rem', color: '#2D3028' }}>
         Get meeting notes delivered to your inbox the moment they're ready.
       </p>
 
       {status === 'success' ? (
-        <p className="text-sm" style={{ color: '#9FB8AD' }}>You're subscribed. We'll email you when new minutes are posted.</p>
+        <p className="text-sm" style={{ color: '#2D3028' }}>You're subscribed. We'll email you when new minutes are posted.</p>
       ) : (
-        <form onSubmit={handleSubmit} className="flex items-center rounded-xl overflow-hidden bg-white/90">
+        <form onSubmit={handleSubmit} className="flex items-stretch rounded-xl" style={{ backgroundColor: '#C0CABC' }}>
           <input
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             placeholder="Your email"
             required
-            className="flex-1 px-4 py-3 text-sm text-gray-800 bg-transparent focus:outline-none placeholder-gray-400"
+            className="flex-1 min-w-0 px-4 py-3 text-sm bg-transparent focus:outline-none rounded-l-xl placeholder-[#354830]"
+            style={{ color: '#2D3028' }}
           />
           <button
             type="submit"
             disabled={status === 'loading'}
-            className="px-5 py-3 text-sm font-semibold text-white transition-opacity disabled:opacity-60 shrink-0"
-            style={{ backgroundColor: '#475841' }}
+            className="px-5 py-3 text-sm font-semibold text-white transition-opacity disabled:opacity-60 shrink-0 rounded-r-xl"
+            style={{ backgroundColor: '#354830' }}
           >
             {status === 'loading' ? 'Signing up…' : 'Sign up'}
           </button>
