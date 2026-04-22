@@ -2,6 +2,7 @@ import { Suspense } from 'react';
 import { getMeetings, getMeetingTypes, getMeetingYears, getMeetingMonths } from '@/lib/db';
 import Sidebar from '@/components/Sidebar';
 import MeetingCard from '@/components/MeetingCard';
+import EmailSignup from '@/components/EmailSignup';
 
 interface SearchParams {
   type?: string;
@@ -48,6 +49,7 @@ export default async function DashboardPage({
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-5">
+            <EmailSignup />
             {meetings.map((meeting) => (
               <MeetingCard key={meeting.id} meeting={meeting} search={search ?? ''} />
             ))}

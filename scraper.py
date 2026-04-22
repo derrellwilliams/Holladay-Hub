@@ -239,6 +239,79 @@ def summarize(client: anthropic.Anthropic, text: str, meeting_type: str, meeting
     return msg.content[0].text
 
 
+# ── Email digest ───────────────────────────────────────────────────────────────
+def send_digest(new_meetings: list[dict], resend_api_key: str) -> None:
+    """Send an email digest to all subscribers for each new meeting."""
+    audience_id = "f0e9aae2-f00b-4af6-b995-34ad472d3429"
+    headers = {"Authorization": f"Bearer {resend_api_key}", "Content-Type": "application/json"}
+
+    # Fetch subscribers
+    resp = requests.get(
+        f"https://api.resend.com/audiences/{audience_id}/contacts",
+        headers=headers,
+        timeout=10,
+    )
+    if not resp.ok:
+        print(f"  [WARN] Could not fetch subscribers: {resp.text}")
+        return
+
+    contacts = [c for c in resp.json().get("data", []) if not c.get("unsubscribed")]
+    if not contacts:
+        print("  No subscribers to email.")
+        return
+
+    emails = [c["email"] for c in contacts]
+    print(f"  Sending digest to {len(emails)} subscriber(s)...")
+
+    for meeting in new_meetings:
+        meeting_type = meeting["meeting_type"]
+        meeting_date = meeting["meeting_date"] or "Unknown date"
+        summary = meeting["summary"]
+
+        # Convert plain summary to simple HTML paragraphs
+        paragraphs = "".join(
+            f"<p style='margin:0 0 12px 0;color:#374151;line-height:1.7;font-size:15px;'>{line}</p>"
+            for line in summary.split("\n") if line.strip()
+        )
+
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head><meta charset="utf-8"></head>
+        <body style="margin:0;padding:0;background:#E6E8E6;font-family:'Helvetica Neue',Arial,sans-serif;">
+          <div style="max-width:600px;margin:40px auto;background:#ffffff;border-radius:16px;overflow:hidden;">
+            <div style="background:#475841;padding:24px 32px;">
+              <p style="margin:0;color:white;font-size:28px;font-family:Georgia,serif;">Holladay Digest</p>
+            </div>
+            <div style="padding:32px;">
+              <div style="margin-bottom:16px;">
+                <span style="background:#EFEFEF;color:#3F403F;font-size:13px;font-weight:600;padding:4px 12px;border-radius:999px;">{meeting_type}</span>
+              </div>
+              <h1 style="margin:0 0 24px 0;font-size:36px;color:#111827;font-family:Georgia,serif;">{meeting_date}</h1>
+              {paragraphs}
+            </div>
+            <div style="padding:16px 32px 32px;border-top:1px solid #f3f4f6;">
+              <p style="margin:0;font-size:12px;color:#9ca3af;">You're receiving this because you subscribed to Holladay Digest. <a href="https://resend.com/unsubscribe" style="color:#475841;">Unsubscribe</a></p>
+            </div>
+          </div>
+        </body>
+        </html>
+        """
+
+        payload = {
+            "from": "onboarding@resend.dev",
+            "to": emails,
+            "subject": f"New meeting minutes: {meeting_type} — {meeting_date}",
+            "html": html,
+        }
+
+        send_resp = requests.post("https://api.resend.com/emails", headers=headers, json=payload, timeout=15)
+        if send_resp.ok:
+            print(f"  Sent: {meeting_type} | {meeting_date}")
+        else:
+            print(f"  [WARN] Email failed: {send_resp.text}")
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main() -> None:
     parser = argparse.ArgumentParser(description="Scrape meeting minutes from a OneSuite city portal.")
@@ -274,6 +347,7 @@ def main() -> None:
         return
 
     succeeded = 0
+    new_meetings_for_digest = []
     for i, item in enumerate(new_links, 1):
         url = item["url"]
         meeting_type = item["meeting_type"]
@@ -324,6 +398,11 @@ def main() -> None:
         conn.commit()
 
         processed.add(url)
+        new_meetings_for_digest.append({
+            "meeting_type": meeting_type,
+            "meeting_date": meeting_date,
+            "summary": summary,
+        })
         succeeded += 1
 
         print()
@@ -332,6 +411,13 @@ def main() -> None:
     print(f"\n=== Done. {succeeded}/{len(new_links)} PDFs processed successfully. ===")
     print(f"Database: {DB_FILE.resolve()}")
     conn.close()
+
+    resend_key = os.environ.get("RESEND_API_KEY")
+    if new_meetings_for_digest and resend_key:
+        print("\nSending email digest...")
+        send_digest(new_meetings_for_digest, resend_key)
+    elif new_meetings_for_digest:
+        print("\n[SKIP] RESEND_API_KEY not set, skipping email digest.")
 
 
 if __name__ == "__main__":
