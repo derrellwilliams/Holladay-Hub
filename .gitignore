@@ -9,9 +9,6 @@ __pycache__/
 .env
 .env.*
 
-# Database
-*.db
-
 # Downloaded PDFs
 pdfs/
 processed_pdfs.json
