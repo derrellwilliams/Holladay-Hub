@@ -299,7 +299,7 @@ def send_digest(new_meetings: list[dict], resend_api_key: str) -> None:
         """
 
         payload = {
-            "from": "onboarding@resend.dev",
+            "from": "hi@matthewdwilliams.com",
             "to": emails,
             "subject": f"New meeting minutes: {meeting_type} — {meeting_date}",
             "html": html,
