@@ -5,12 +5,12 @@ Scrapes meeting minutes PDFs from holladayut.suiteonemedia.com,
 extracts text, summarizes via Claude, and saves to SQLite.
 """
 
-import json
+import argparse
 import os
 import re
 import sqlite3
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urljoin
 
@@ -32,7 +32,6 @@ if _env_path.exists():
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 BASE_URL = "https://holladayut.suiteonemedia.com"
-PROCESSED_FILE = Path("processed_pdfs.json")
 DB_FILE = Path("meeting_summaries.db")
 PDF_DIR = Path("pdfs")
 HEADERS = {
@@ -63,16 +62,9 @@ def init_db(conn: sqlite3.Connection) -> None:
 
 
 # ── Processed-PDF tracking ─────────────────────────────────────────────────────
-def load_processed() -> set:
-    if PROCESSED_FILE.exists():
-        with open(PROCESSED_FILE) as f:
-            return set(json.load(f))
-    return set()
-
-
-def save_processed(processed: set) -> None:
-    with open(PROCESSED_FILE, "w") as f:
-        json.dump(sorted(processed), f, indent=2)
+def load_processed(conn: sqlite3.Connection) -> set:
+    rows = conn.execute("SELECT pdf_url FROM meeting_summaries").fetchall()
+    return {row[0] for row in rows}
 
 
 # ── Scraping ───────────────────────────────────────────────────────────────────
@@ -142,25 +134,26 @@ def parse_meeting_rows(soup: BeautifulSoup) -> list[dict]:
     return results
 
 
-def scrape_all_minutes(session: requests.Session) -> list[dict]:
+def scrape_all_minutes(session: requests.Session, recent: bool = False) -> list[dict]:
     """
-    Fetch meetings across multiple date windows to capture all historical records.
+    Fetch meetings across multiple date windows.
+    If recent=True, only checks the last 90 days.
     Returns a deduplicated list of minutes entries.
     """
     all_links: dict[str, dict] = {}
-    today = datetime.now().strftime("%m/%d/%Y")
+    today = datetime.now()
 
-    # Fetch in yearly windows for the last 4 years
-    current_year = datetime.now().year
-    years = list(range(2020, current_year + 1))
-    windows = [
-        (f"01/01/{y}", f"12/31/{y}") for y in years
-    ]
+    if recent:
+        date_from = (today - timedelta(days=90)).strftime("%m/%d/%Y")
+        date_to = today.strftime("%m/%d/%Y")
+        windows = [(date_from, date_to)]
+    else:
+        current_year = today.year
+        windows = [(f"01/01/{y}", f"12/31/{y}") for y in range(2020, current_year + 1)]
 
-    print(f"Fetching {len(windows)} year-windows of past meetings...")
+    print(f"Fetching {len(windows)} date window(s)...")
     for date_from, date_to in windows:
-        year = date_from[-4:]
-        print(f"  Fetching {year}...", end=" ", flush=True)
+        print(f"  Fetching {date_from} → {date_to}...", end=" ", flush=True)
         soup = fetch_meetings_page(session, date_from, date_to)
         if soup:
             rows = parse_meeting_rows(soup)
@@ -248,6 +241,10 @@ def summarize(client: anthropic.Anthropic, text: str, meeting_type: str, meeting
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--recent", action="store_true", help="Only check the last 90 days")
+    args = parser.parse_args()
+
     print("=== Holladay City Meeting Minutes Scraper ===\n")
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
@@ -255,15 +252,15 @@ def main() -> None:
         raise SystemExit("ERROR: ANTHROPIC_API_KEY environment variable not set.")
 
     PDF_DIR.mkdir(exist_ok=True)
-    processed = load_processed()
     conn = sqlite3.connect(DB_FILE)
     init_db(conn)
+    processed = load_processed(conn)
     claude = anthropic.Anthropic(api_key=api_key)
     session = requests.Session()
 
     print(f"Previously processed: {len(processed)} PDFs\n")
 
-    all_links = scrape_all_minutes(session)
+    all_links = scrape_all_minutes(session, recent=args.recent)
 
     new_links = [item for item in all_links if item["url"] not in processed]
     print(f"New PDFs to process: {len(new_links)}\n")
@@ -290,8 +287,7 @@ def main() -> None:
         # Download
         print("  Downloading...", end=" ", flush=True)
         if not download_pdf(session, url, pdf_path):
-            processed.add(url)  # skip permanently so we don't retry broken URLs
-            save_processed(processed)
+            processed.add(url)
             continue
         print("OK")
 
@@ -301,7 +297,6 @@ def main() -> None:
         if not text.strip():
             print("no text extracted, skipping.")
             processed.add(url)
-            save_processed(processed)
             continue
         print(f"{len(text):,} chars")
 
@@ -326,7 +321,6 @@ def main() -> None:
         conn.commit()
 
         processed.add(url)
-        save_processed(processed)
         succeeded += 1
 
         print()
