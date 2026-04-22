@@ -21,26 +21,26 @@ export default function EmailSignup() {
 
   return (
     <div className="rounded-2xl px-8 py-7 mb-5" style={{ backgroundColor: '#3F403F' }}>
-      <p className="text-white mb-4 text-lg" style={{ fontFamily: 'var(--font-serif)' }}>
+      <p className="text-white mb-4 text-2xl" style={{ fontFamily: 'var(--font-serif)' }}>
         Get meeting notes delivered to your inbox the moment they're ready.
       </p>
 
       {status === 'success' ? (
         <p className="text-sm" style={{ color: '#9FB8AD' }}>You're subscribed. We'll email you when new minutes are posted.</p>
       ) : (
-        <form onSubmit={handleSubmit} className="flex gap-2">
+        <form onSubmit={handleSubmit} className="flex items-center rounded-xl overflow-hidden bg-white/90">
           <input
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             placeholder="Your email"
             required
-            className="flex-1 px-4 py-2.5 rounded-xl text-sm text-gray-800 bg-white/90 focus:outline-none focus:ring-2 focus:ring-white/50 placeholder-gray-400"
+            className="flex-1 px-4 py-3 text-sm text-gray-800 bg-transparent focus:outline-none placeholder-gray-400"
           />
           <button
             type="submit"
             disabled={status === 'loading'}
-            className="px-5 py-2.5 rounded-xl text-sm font-semibold text-white transition-opacity disabled:opacity-60"
+            className="px-5 py-3 text-sm font-semibold text-white transition-opacity disabled:opacity-60 shrink-0"
             style={{ backgroundColor: '#475841' }}
           >
             {status === 'loading' ? 'Signing up…' : 'Sign up'}
