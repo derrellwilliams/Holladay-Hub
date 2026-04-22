@@ -1,0 +1,95 @@
+import Database from 'better-sqlite3';
+import path from 'path';
+
+export interface Meeting {
+  id: number;
+  meeting_type: string;
+  meeting_date: string | null;
+  pdf_url: string;
+  summary: string;
+  created_at: string;
+}
+
+let db: Database.Database | null = null;
+
+function getDb(): Database.Database {
+  if (!db) {
+    const dbPath = path.join(process.cwd(), '..', 'meeting_summaries.db');
+    db = new Database(dbPath, { readonly: true });
+  }
+  return db;
+}
+
+export function getMeetings(type?: string, search?: string, year?: string, month?: string): Meeting[] {
+  const database = getDb();
+
+  let query = 'SELECT * FROM meeting_summaries WHERE 1=1';
+  const params: (string | number)[] = [];
+
+  if (type) {
+    query += ' AND meeting_type = ?';
+    params.push(type);
+  }
+
+  // Dates stored as "Feb 05, 2026" — year is last 4 chars, month is first 3
+  if (year) {
+    query += " AND meeting_date LIKE ?";
+    params.push(`%${year}`);
+  }
+
+  if (month) {
+    query += " AND meeting_date LIKE ?";
+    params.push(`${month}%`);
+  }
+
+  query += ' ORDER BY meeting_date DESC, id DESC';
+
+  let rows = database.prepare(query).all(...params) as Meeting[];
+
+  if (search) {
+    const q = search.toLowerCase();
+    rows = rows.filter(
+      (r) =>
+        r.summary.toLowerCase().includes(q) ||
+        r.meeting_type.toLowerCase().includes(q) ||
+        (r.meeting_date ?? '').includes(q)
+    );
+  }
+
+  return rows;
+}
+
+export function getMeeting(id: number): Meeting | null {
+  const database = getDb();
+  const row = database.prepare('SELECT * FROM meeting_summaries WHERE id = ?').get(id) as Meeting | undefined;
+  return row ?? null;
+}
+
+export function getMeetingTypes(): string[] {
+  const database = getDb();
+  const rows = database.prepare('SELECT DISTINCT meeting_type FROM meeting_summaries ORDER BY meeting_type').all() as { meeting_type: string }[];
+  return rows.map((r) => r.meeting_type);
+}
+
+export function getMeetingYears(): string[] {
+  const database = getDb();
+  // Year is last 4 chars of "Feb 05, 2026"
+  const rows = database
+    .prepare("SELECT DISTINCT substr(meeting_date, -4) as year FROM meeting_summaries WHERE meeting_date IS NOT NULL ORDER BY year DESC")
+    .all() as { year: string }[];
+  return rows.map((r) => r.year).filter(Boolean);
+}
+
+const MONTH_ORDER = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+export function getMeetingMonths(): string[] {
+  const database = getDb();
+  // Month is first 3 chars of "Feb 05, 2026"
+  const rows = database
+    .prepare("SELECT DISTINCT substr(meeting_date, 1, 3) as month FROM meeting_summaries WHERE meeting_date IS NOT NULL")
+    .all() as { month: string }[];
+  return rows
+    .map((r) => r.month)
+    .filter(Boolean)
+    .sort((a, b) => MONTH_ORDER.indexOf(a) - MONTH_ORDER.indexOf(b));
+}

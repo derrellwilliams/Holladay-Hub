@@ -1,0 +1,341 @@
+#!/usr/bin/env python3
+"""
+Holladay City Meeting Minutes Scraper
+Scrapes meeting minutes PDFs from holladayut.suiteonemedia.com,
+extracts text, summarizes via Claude, and saves to SQLite.
+"""
+
+import json
+import os
+import re
+import sqlite3
+import time
+from datetime import datetime
+from pathlib import Path
+from urllib.parse import urljoin
+
+import anthropic
+import pdfplumber
+import requests
+from bs4 import BeautifulSoup
+from typing import Optional
+
+# Load .env file if present
+_env_path = Path(__file__).parent / ".env"
+if _env_path.exists():
+    with open(_env_path) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _, _v = _line.partition("=")
+                os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
+
+# ── Config ─────────────────────────────────────────────────────────────────────
+BASE_URL = "https://holladayut.suiteonemedia.com"
+PROCESSED_FILE = Path("processed_pdfs.json")
+DB_FILE = Path("meeting_summaries.db")
+PDF_DIR = Path("pdfs")
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+    "Referer": BASE_URL,
+}
+
+
+# ── Database setup ─────────────────────────────────────────────────────────────
+def init_db(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS meeting_summaries (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            meeting_type TEXT NOT NULL,
+            meeting_date TEXT,
+            pdf_url      TEXT UNIQUE NOT NULL,
+            summary      TEXT NOT NULL,
+            created_at   TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    conn.commit()
+
+
+# ── Processed-PDF tracking ─────────────────────────────────────────────────────
+def load_processed() -> set:
+    if PROCESSED_FILE.exists():
+        with open(PROCESSED_FILE) as f:
+            return set(json.load(f))
+    return set()
+
+
+def save_processed(processed: set) -> None:
+    with open(PROCESSED_FILE, "w") as f:
+        json.dump(sorted(processed), f, indent=2)
+
+
+# ── Scraping ───────────────────────────────────────────────────────────────────
+def fetch_meetings_page(session: requests.Session, date_from: str, date_to: str) -> Optional[BeautifulSoup]:
+    """
+    Fetch the main page with a date-range filter.
+    The site accepts dateFrom / dateTo as GET params (MM/DD/YYYY).
+    """
+    params = {"dateFrom": date_from, "dateTo": date_to}
+    try:
+        resp = session.get(BASE_URL + "/", headers=HEADERS, params=params, timeout=30)
+        resp.raise_for_status()
+        return BeautifulSoup(resp.text, "html.parser")
+    except requests.RequestException as e:
+        print(f"  [WARN] Fetch failed: {e}")
+        return None
+
+
+def parse_meeting_rows(soup: BeautifulSoup) -> list[dict]:
+    """
+    Parse the eventTable rows.
+
+    Expected row structure (confirmed from live page):
+      <tr>
+        <td><a href="/event/?id=NNN">Meeting Type Name</a></td>
+        <td>Feb 05, 2026 | 06:00 PM</td>
+        <td><a href="/event/GetAgendaFile/Agenda?aid=NNN"></a></td>
+        <td><a href="/event/GetAgendaPacketFile/...?apid=NNN"></a></td>
+        <td><a href="/event/GetMinutesFile/Minutes?mid=NNN"></a></td>
+        ...
+      </tr>
+    """
+    results = []
+
+    # All rows in both eventTable and upcomingEventsTable
+    for table in soup.find_all("table", class_=re.compile(r"eventTable|upcomingEventsTable", re.I)):
+        for row in table.find_all("tr"):
+            cells = row.find_all("td")
+            if not cells:
+                continue
+
+            # First cell: event link → meeting type name
+            event_link = cells[0].find("a", href=re.compile(r"/event/\?id=", re.I))
+            if not event_link:
+                continue
+            import re as _re
+            meeting_type = _re.sub(r'\(opens in(to)? a? ?new window\)', '', event_link.get_text(strip=True), flags=_re.I).strip()
+
+            # Second cell: date/time string
+            meeting_date = cells[1].get_text(strip=True) if len(cells) > 1 else None
+            if meeting_date:
+                # Normalize: "Feb 05, 2026 | 06:00 PM" → "Feb 05, 2026"
+                meeting_date = meeting_date.split("|")[0].strip()
+
+            # Find the minutes link anywhere in this row
+            minutes_link = row.find("a", href=re.compile(r"/event/GetMinutesFile/", re.I))
+            if not minutes_link:
+                continue  # no minutes available for this meeting
+
+            minutes_url = urljoin(BASE_URL, minutes_link["href"])
+            results.append({
+                "url": minutes_url,
+                "meeting_type": meeting_type,
+                "meeting_date": meeting_date,
+            })
+
+    return results
+
+
+def scrape_all_minutes(session: requests.Session) -> list[dict]:
+    """
+    Fetch meetings across multiple date windows to capture all historical records.
+    Returns a deduplicated list of minutes entries.
+    """
+    all_links: dict[str, dict] = {}
+    today = datetime.now().strftime("%m/%d/%Y")
+
+    # Fetch in yearly windows for the last 4 years
+    current_year = datetime.now().year
+    years = list(range(2020, current_year + 1))
+    windows = [
+        (f"01/01/{y}", f"12/31/{y}") for y in years
+    ]
+
+    print(f"Fetching {len(windows)} year-windows of past meetings...")
+    for date_from, date_to in windows:
+        year = date_from[-4:]
+        print(f"  Fetching {year}...", end=" ", flush=True)
+        soup = fetch_meetings_page(session, date_from, date_to)
+        if soup:
+            rows = parse_meeting_rows(soup)
+            new = 0
+            for item in rows:
+                if item["url"] not in all_links:
+                    all_links[item["url"]] = item
+                    new += 1
+            print(f"{new} new minute links")
+        else:
+            print("fetch failed")
+        time.sleep(0.3)
+
+    print(f"\nTotal unique minutes PDFs found: {len(all_links)}")
+    return list(all_links.values())
+
+
+# ── PDF download & extraction ──────────────────────────────────────────────────
+def download_pdf(session: requests.Session, url: str, dest: Path) -> bool:
+    if dest.exists():
+        return True
+    try:
+        resp = session.get(url, headers=HEADERS, timeout=60, stream=True)
+        resp.raise_for_status()
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with open(dest, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=8192):
+                f.write(chunk)
+        return True
+    except requests.RequestException as e:
+        print(f"  [WARN] Download failed: {e}")
+        return False
+
+
+def extract_text(pdf_path: Path) -> str:
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            pages = []
+            for page in pdf.pages:
+                text = page.extract_text()
+                if text:
+                    pages.append(text)
+            return "\n\n".join(pages)
+    except Exception as e:
+        print(f"  [WARN] PDF extraction error: {e}")
+        return ""
+
+
+# ── Claude summarization ───────────────────────────────────────────────────────
+SUMMARY_PROMPT = """\
+You are analyzing official meeting minutes from a city government meeting.
+
+Meeting Type: {meeting_type}
+Meeting Date: {meeting_date}
+
+Provide a structured summary with these sections:
+
+1. **Meeting Overview** — Meeting type, date, location, quorum/attendees.
+2. **Key Topics Discussed** — Bullet list of main subjects.
+3. **Decisions Made** — Each formal decision or resolution adopted.
+4. **Votes** — Each vote taken: motion, outcome, and individual votes if recorded.
+5. **Action Items** — Tasks assigned or follow-up actions, with responsible parties.
+6. **Other Notable Items** — Public comments, announcements, or anything significant.
+
+Be concise but complete. Use dates and names exactly as written in the document.
+
+--- MEETING MINUTES ---
+{text}
+"""
+
+
+def summarize(client: anthropic.Anthropic, text: str, meeting_type: str, meeting_date: Optional[str]) -> str:
+    prompt = SUMMARY_PROMPT.format(
+        meeting_type=meeting_type,
+        meeting_date=meeting_date or "unknown",
+        text=text[:15000],  # stay within context limits
+    )
+    msg = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=2048,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return msg.content[0].text
+
+
+# ── Main ───────────────────────────────────────────────────────────────────────
+def main() -> None:
+    print("=== Holladay City Meeting Minutes Scraper ===\n")
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise SystemExit("ERROR: ANTHROPIC_API_KEY environment variable not set.")
+
+    PDF_DIR.mkdir(exist_ok=True)
+    processed = load_processed()
+    conn = sqlite3.connect(DB_FILE)
+    init_db(conn)
+    claude = anthropic.Anthropic(api_key=api_key)
+    session = requests.Session()
+
+    print(f"Previously processed: {len(processed)} PDFs\n")
+
+    all_links = scrape_all_minutes(session)
+
+    new_links = [item for item in all_links if item["url"] not in processed]
+    print(f"New PDFs to process: {len(new_links)}\n")
+
+    if not new_links:
+        print("Nothing new to process. Done!")
+        conn.close()
+        return
+
+    succeeded = 0
+    for i, item in enumerate(new_links, 1):
+        url = item["url"]
+        meeting_type = item["meeting_type"]
+        meeting_date = item["meeting_date"]
+
+        mid_match = re.search(r"mid=(\d+)", url)
+        mid = mid_match.group(1) if mid_match else str(abs(hash(url)))
+        safe_type = re.sub(r"[^\w]", "_", meeting_type)
+        pdf_path = PDF_DIR / f"{safe_type}_{mid}.pdf"
+
+        print(f"[{i}/{len(new_links)}] {meeting_type} | {meeting_date or 'date unknown'}")
+        print(f"  mid={mid}  →  {url}")
+
+        # Download
+        print("  Downloading...", end=" ", flush=True)
+        if not download_pdf(session, url, pdf_path):
+            processed.add(url)  # skip permanently so we don't retry broken URLs
+            save_processed(processed)
+            continue
+        print("OK")
+
+        # Extract
+        print("  Extracting text...", end=" ", flush=True)
+        text = extract_text(pdf_path)
+        if not text.strip():
+            print("no text extracted, skipping.")
+            processed.add(url)
+            save_processed(processed)
+            continue
+        print(f"{len(text):,} chars")
+
+        # Summarize
+        print("  Summarizing with Claude...", end=" ", flush=True)
+        try:
+            summary = summarize(claude, text, meeting_type, meeting_date)
+        except anthropic.APIError as e:
+            print(f"API error: {e}")
+            continue
+        print("OK")
+
+        # Save to DB
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO meeting_summaries
+                (meeting_type, meeting_date, pdf_url, summary)
+            VALUES (?, ?, ?, ?)
+            """,
+            (meeting_type, meeting_date, url, summary),
+        )
+        conn.commit()
+
+        processed.add(url)
+        save_processed(processed)
+        succeeded += 1
+
+        print()
+        time.sleep(0.5)  # polite pause between Claude calls
+
+    print(f"\n=== Done. {succeeded}/{len(new_links)} PDFs processed successfully. ===")
+    print(f"Database: {DB_FILE.resolve()}")
+    conn.close()
+
+
+if __name__ == "__main__":
+    main()
