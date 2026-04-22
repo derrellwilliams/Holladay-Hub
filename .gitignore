@@ -12,6 +12,10 @@ __pycache__/
 # Database
 *.db
 
+# Downloaded PDFs
+pdfs/
+processed_pdfs.json
+
 # Node
 next-app/node_modules/
 next-app/.next/
