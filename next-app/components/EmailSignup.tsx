@@ -5,6 +5,7 @@ import { useState } from 'react';
 export default function EmailSignup() {
   const [email, setEmail] = useState('');
   const [status, setStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [errorMessage, setErrorMessage] = useState('Something went wrong. Please try again.');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -16,7 +17,13 @@ export default function EmailSignup() {
       body: JSON.stringify({ email }),
     });
 
-    setStatus(res.ok ? 'success' : 'error');
+    if (res.ok) {
+      setStatus('success');
+    } else {
+      const data = await res.json().catch(() => ({}));
+      setErrorMessage(data.error || 'Something went wrong. Please try again.');
+      setStatus('error');
+    }
   };
 
   return (
@@ -50,7 +57,7 @@ export default function EmailSignup() {
       )}
 
       {status === 'error' && (
-        <p className="text-red-300 text-xs mt-2">Something went wrong. Please try again.</p>
+        <p className="text-red-300 text-xs mt-2">{errorMessage}</p>
       )}
     </div>
   );

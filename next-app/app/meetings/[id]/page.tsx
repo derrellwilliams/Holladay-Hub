@@ -161,7 +161,7 @@ function renderSummary(text: string) {
 export default async function MeetingDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id: idStr } = await params;
   const id = parseInt(idStr, 10);
-  if (isNaN(id)) notFound();
+  if (isNaN(id) || id <= 0) notFound();
 
   const meeting = getMeeting(id);
   if (!meeting) notFound();

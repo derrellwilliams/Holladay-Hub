@@ -34,7 +34,7 @@ function highlight(text: string, term: string) {
   );
 }
 
-export default function MeetingCard({ meeting, search = '' }: { meeting: Meeting; search?: string }) {
+export default function MeetingCard({ meeting, search = '' }: { meeting: Meeting; search: string }) {
   const allTopics = getTopics(meeting.summary);
   const label = getCanonicalType(meeting.meeting_type);
 

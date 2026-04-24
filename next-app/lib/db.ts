@@ -15,13 +15,19 @@ let db: Database.Database | null = null;
 
 function getDb(): Database.Database {
   if (!db) {
-    const dbPath = path.join(process.cwd(), '..', 'meeting_summaries.db');
+    const dbPath = process.env.DATABASE_PATH || path.join(process.cwd(), '..', 'meeting_summaries.db');
     db = new Database(dbPath, { readonly: true });
+    process.on('exit', () => { db?.close(); });
   }
   return db;
 }
 
+const VALID_MONTHS = new Set(['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']);
+
 export function getMeetings(type?: string, search?: string, year?: string, month?: string): Meeting[] {
+  if (year && !/^\d{4}$/.test(year)) return [];
+  if (month && !VALID_MONTHS.has(month)) return [];
+
   const database = getDb();
 
   let query = 'SELECT * FROM meeting_summaries WHERE 1=1';
@@ -42,25 +48,22 @@ export function getMeetings(type?: string, search?: string, year?: string, month
     params.push(`${month}%`);
   }
 
+  if (search) {
+    const escaped = search.replace(/[%_\\]/g, '\\$&');
+    const sq = `%${escaped}%`;
+    query += " AND (summary LIKE ? ESCAPE '\\' OR meeting_type LIKE ? ESCAPE '\\' OR meeting_date LIKE ? ESCAPE '\\')";
+    params.push(sq, sq, sq);
+  }
+
   query += ' ORDER BY id DESC';
 
-  let rows = database.prepare(query).all(...params) as Meeting[];
+  const rows = database.prepare(query).all(...params) as Meeting[];
 
   rows.sort((a, b) => {
     const da = a.meeting_date ? new Date(a.meeting_date).getTime() : 0;
     const db2 = b.meeting_date ? new Date(b.meeting_date).getTime() : 0;
     return db2 - da;
   });
-
-  if (search) {
-    const q = search.toLowerCase();
-    rows = rows.filter(
-      (r) =>
-        r.summary.toLowerCase().includes(q) ||
-        r.meeting_type.toLowerCase().includes(q) ||
-        (r.meeting_date ?? '').includes(q)
-    );
-  }
 
   return rows;
 }

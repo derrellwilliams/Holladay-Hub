@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useRef } from 'react';
+import { useRef, useEffect } from 'react';
 import { getCanonicalType } from '@/lib/meetingColors';
 
 const MONTH_NAMES: Record<string, string> = {
@@ -47,6 +47,12 @@ export default function Sidebar({ types, years, months, selectedType, selectedYe
       router.push(`/?${params.toString()}`);
     }, 300);
   };
+
+  useEffect(() => {
+    return () => {
+      if (searchTimer.current) clearTimeout(searchTimer.current);
+    };
+  }, []);
 
   const toggleType = (type: string) => {
     const current = searchParams.get('type');
